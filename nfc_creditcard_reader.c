@@ -5,6 +5,8 @@ http://eternal-todo.com
 
 Based on the PoC readnfccc by Renaud Lifchitz (renaud.lifchitz@bt.com)
 
+Fixed to work with libnfc 1.7.4 by bluec0re
+
 License: distributed under GPL version 3 (http://www.gnu.org/licenses/gpl.html)
 
 * Introduction:
@@ -15,7 +17,7 @@ License: distributed under GPL version 3 (http://www.gnu.org/licenses/gpl.html)
 * Requirements:
     libnfc (>= 1.6.0-rc1) and a suitable NFC reader (http://www.libnfc.org/documentation/hardware/compatibility)
 
-* Compilation: 
+* Compilation:
     $ gcc nfc_creditcard_reader.c -lnfc -o nfc_creditcard_reader
 
 */
@@ -26,13 +28,16 @@ License: distributed under GPL version 3 (http://www.gnu.org/licenses/gpl.html)
 
 #include <nfc/nfc.h>
 
+// declare func
+int pn53x_transceive(struct nfc_device *pnd, const uint8_t *pbtTx, const size_t szTx, uint8_t *pbtRx, const size_t szRxLen, int timeout);
+
 // Choose whether to mask the PAN or not
 #define MASKED 1
 
 #define MAX_FRAME_LEN 300
 
 void show(size_t recvlg, uint8_t *recv) {
-	int i;
+    int i;
 
     for (i=0;i<(int) recvlg;i++) {
         printf("%02x",(unsigned int) recv[i]);
@@ -40,33 +45,44 @@ void show(size_t recvlg, uint8_t *recv) {
     printf("\n");
 }
 
+static void close(nfc_device*pnd, nfc_context* context) {
+    printf("[-] Closing device\n");
+    if(pnd)
+        nfc_close(pnd);
+    if(context)
+        nfc_exit(context);
+}
+
 int main(int argc, char **argv) {
     int aid_found = 0;
-	nfc_device* pnd;
+    nfc_context *context;
+    nfc_device* pnd;
     nfc_modulation nm;
     nfc_target ant[1];
     
-	uint8_t abtRx[MAX_FRAME_LEN];
-	uint8_t abtTx[MAX_FRAME_LEN];
+    uint8_t abtRx[MAX_FRAME_LEN];
+    uint8_t abtTx[MAX_FRAME_LEN];
     
-	size_t szRx = sizeof(abtRx);
-	size_t szTx;
+    size_t szRx = sizeof(abtRx);
+    size_t szTx;
 
-	uint8_t START_14443A[] = {0x4A, 0x01, 0x00}; //InListPassiveTarget
-	uint8_t START_14443B[] = {0x4A, 0x01, 0x03, 0x00}; //InListPassiveTarget
-	uint8_t SELECT_APP[4][15] = {{0x40,0x01,0x00,0xA4,0x04,0x00,0x07,0xA0,0x00,0x00,0x00,0x03,0x10,0x10,0x00},// InDataExchange VISA
+    uint8_t START_14443A[] = {0x4A, 0x01, 0x00}; //InListPassiveTarget
+    uint8_t START_14443B[] = {0x4A, 0x01, 0x03, 0x00}; //InListPassiveTarget
+    uint8_t SELECT_APP[4][15] = {{0x40,0x01,0x00,0xA4,0x04,0x00,0x07,0xA0,0x00,0x00,0x00,0x03,0x10,0x10,0x00},// InDataExchange VISA
                                 {0x40,0x01,0x00,0xA4,0x04,0x00,0x07,0xA0,0x00,0x00,0x00,0x04,0x10,0x10,0x00}, // InDataExchange MasterCard
                                 {0x40,0x01,0x00,0xA4,0x04,0x00,0x07,0xA0,0x00,0x00,0x00,0x03,0x20,0x10,0x00}, // InDataExchange VISA Electron
                                 {0x40,0x01,0x00,0xA4,0x04,0x00,0x07,0xA0,0x00,0x00,0x00,0x42,0x10,0x10,0x00}}; // InDataExchange CB (Carte Bleu)
-	uint8_t READ_RECORD[] = {0x40, 0x01, 0x00, 0xB2, 0x01, 0x0C, 0x00}; //InDataExchange 
-	unsigned char *res, output[50], c, amount[10],msg[100];
-	unsigned int i, j, expiry, m, n;
+    uint8_t READ_RECORD[] = {0x40, 0x01, 0x00, 0xB2, 0x01, 0x0C, 0x00}; //InDataExchange 
+    unsigned char *res, output[50], c, amount[10],msg[100];
+    unsigned int i, j, expiry, m, n;
     printf("[-] Connecting...\n");
-	pnd = nfc_open(NULL,NULL);
-	if (pnd == NULL) {
-		printf("[x] Unable to connect to NFC device.\n");
-		return(1);
-	}
+    nfc_init(&context);
+    pnd = nfc_open(context,NULL);
+    if (pnd == NULL) {
+        printf("[x] Unable to connect to NFC device.\n");
+        close(pnd, context);
+        return(1);
+    }
 
     printf("[+] Connected to NFC reader\n");
     nfc_initiator_init(pnd);
@@ -77,29 +93,32 @@ int main(int argc, char **argv) {
     szRx = sizeof(abtRx);
     int numBytes;
     // 14443A Card
-    if (numBytes = pn53x_transceive(pnd, START_14443A, sizeof(START_14443A), abtRx, &szRx, 5000)) {
+    if (numBytes = pn53x_transceive(pnd, START_14443A, sizeof(START_14443A), abtRx, szRx, 5000)) {
         if (numBytes > 0){
             printf("[+] 14443A card found!!\n");
         }
         else{
             // 14443B Card
-            if (numBytes = pn53x_transceive(pnd, START_14443B, sizeof(START_14443B), abtRx, &szRx, 5000)) {
+            if (numBytes = pn53x_transceive(pnd, START_14443B, sizeof(START_14443B), abtRx, szRx, 5000)) {
                 if (numBytes > 0){
                     printf("[+] 14443B card found!!\n");
                 }
                 else{
                     printf("[x] Card not found or not supported!! Supported types: 14443A, 14443B.\n");
-                    return(1);    
+                    close(pnd, context);
+                    return(1);
                 }
             }
             else{
                 nfc_perror(pnd, "START_14443B");
+                close(pnd, context);
                 return(1);
             }
         }
     }
     else{
         nfc_perror(pnd, "START_14443A");
+        close(pnd, context);
         return(1);    
     }
     
@@ -107,9 +126,10 @@ int main(int argc, char **argv) {
     printf("[-] Looking for known AIDs (VISA, VISA Electron, Mastercard, CB)...\n");
     memset(&abtRx,255,MAX_FRAME_LEN);
     for (i=0; i<4; i++){
-        if (!pn53x_transceive(pnd, SELECT_APP[i], sizeof(SELECT_APP[i]), abtRx, &szRx, NULL)) {
+        if (!pn53x_transceive(pnd, SELECT_APP[i], sizeof(SELECT_APP[i]), abtRx, szRx, 0)) {
             printf("[x] Error sending command!!\n");
             nfc_perror(pnd, "SELECT_APP_VISA");
+            close(pnd, context);
             return(1);
         }
         else{
@@ -145,6 +165,7 @@ int main(int argc, char **argv) {
     }
     if (!aid_found){
         printf("[x] AID not supported!! Supported AIDs: VISA, VISA ELECTRON, MASTERCARD, CB.\n");
+        close(pnd, context);
         return(1);
     }
     
@@ -156,8 +177,9 @@ int main(int argc, char **argv) {
             READ_RECORD[4] = n;
             szRx = sizeof(abtRx);
             //printf("\n> Sending READ RECORD...(%2x-%2x)\n",n,m);
-            if (!pn53x_transceive(pnd, READ_RECORD, sizeof(READ_RECORD), abtRx, &szRx, NULL)) {
+            if (!pn53x_transceive(pnd, READ_RECORD, sizeof(READ_RECORD), abtRx, szRx, 0)) {
                     nfc_perror(pnd, "READ_RECORD");
+                    close(pnd, context);
                     return(1);
             }
             
@@ -177,7 +199,7 @@ int main(int argc, char **argv) {
                         if (*res==0x5f&&*(res+1)==0x20) {
                             strncpy(output, res+3, (int) *(res+2));
                             output[(int) *(res+2)]=0;
-                            printf("Cardholder name: %s\n",output);			
+                            printf("Cardholder name: %s\n",output);            
                         }
                         res++;
                 }
@@ -203,7 +225,7 @@ int main(int argc, char **argv) {
                         printf("\n");
                         expiry = (output[10]+(output[9]<<8)+(output[8]<<16))>>4;
                         printf("Expiration date: %02x/20%02x\n\n",(expiry&0xff),((expiry>>8)&0xff));
-                        break;			
+                        break;            
                     }
                     res++;
                 }       
@@ -219,7 +241,7 @@ int main(int argc, char **argv) {
                             printf("%02x",(unsigned int)*(res+k));
                         }
                         printf("\n\n");
-                        break;			
+                        break;            
                     }
                     res++;
                 }
@@ -235,11 +257,11 @@ int main(int argc, char **argv) {
                             printf("%02x",(unsigned int)*(res+k));
                         }
                         printf("\n\n");
-                        break;			
+                        break;            
                     }
                     res++;
                 }     
-		
+        
                 // Looking for transaction logs
                 szRx = sizeof(abtRx);
                 if (szRx==18) { // Non-empty transaction
@@ -267,6 +289,6 @@ int main(int argc, char **argv) {
         }
         m += 8;
     }
-	nfc_close(pnd);
-	return(0);
+    close(pnd, context);
+    return(0);
 }
